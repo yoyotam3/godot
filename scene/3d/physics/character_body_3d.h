@@ -112,7 +112,14 @@ public:
 	PlatformOnLeave get_platform_on_leave() const;
 
 	CharacterBody3D();
-
+		
+	bool is_custom_floor_detect_enabled() const;
+	void set_custom_floor_detect_enabled(bool p_enabled);
+	real_t get_ledge_capsule_radius() const;
+	void set_ledge_capsule_radius(real_t radius);
+	bool is_slipping() const;
+	bool is_slipping_only() const;
+	const Vector3 &get_slip_normal() const;
 private:
 	real_t margin = 0.001;
 	MotionMode motion_mode = MOTION_MODE_GROUNDED;
@@ -123,15 +130,17 @@ private:
 			bool floor;
 			bool wall;
 			bool ceiling;
+			bool slipping;
 		};
 
 		CollisionState() {
 		}
 
-		CollisionState(bool p_floor, bool p_wall, bool p_ceiling) {
+		CollisionState(bool p_floor, bool p_wall, bool p_ceiling, bool p_slipping) {
 			floor = p_floor;
 			wall = p_wall;
 			ceiling = p_ceiling;
+			slipping=p_slipping;
 		}
 	};
 
@@ -172,9 +181,17 @@ private:
 	const Vector3 &get_up_direction() const;
 	bool _on_floor_if_snapped(bool p_was_on_floor, bool p_vel_dir_facing_up);
 	void set_up_direction(const Vector3 &p_up_direction);
-	void _set_collision_direction(const PhysicsServer3D::MotionResult &p_result, CollisionState &r_state, CollisionState p_apply_state = CollisionState(true, true, true));
+	void _set_collision_direction(const PhysicsServer3D::MotionResult &p_result, CollisionState &r_state, CollisionState p_apply_state = CollisionState(true, true, true, true), bool test_only=false);
 	void _set_platform_data(const PhysicsServer3D::MotionCollision &p_collision);
 	void _snap_on_floor(bool p_was_on_floor, bool p_vel_dir_facing_up);
+
+	//bool slipping=false;
+	Vector3 slip_normal;
+	bool custom_floor_detect=false;
+	real_t ledge_ray_length =0.01;
+	real_t ledge_capsule_radius=0.01;
+	//PhysicsDirectSpaceState3D::RayResult ray_result;
+	bool _update_ray(Vector3 pos);
 
 protected:
 	void _notification(int p_what);
