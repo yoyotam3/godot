@@ -309,25 +309,29 @@ void CharacterBody3D::_move_and_slide_grounded(double p_delta, bool p_was_on_flo
 				}
 			}
 
-			if (collision_state.slipping && !vel_dir_facing_up) {
-				if (result.remainder.dot(slip_normal)<0 && !result.remainder.is_equal_approx(-slip_normal) && !result.remainder.is_zero_approx()) {// moving towards but not directly
-						// Vector3 remainder_slip = result.remainder.slide(slip_normal);
-						// real_t remainder_slip_up = remainder_slip.dot(up_direction);
-						// real_t remainder_up = result.remainder.dot(up_direction);
-						// if (!Math::is_zero_approx(remainder_slip_up)) {
-						// 	// print_line("test");
-						// 	real_t slide_compensate = remainder_up/remainder_slip_up;
-						// 	motion=remainder_slip*slide_compensate;
-						// 	apply_default_sliding=false;
-						// }
-						Vector3 ray_dir = up_direction.cross(slip_normal.cross(up_direction));
-						Vector3 offset = ((result.remainder.dot(slip_normal)*ray_dir)/(ray_dir.dot(slip_normal)));
-						motion=result.remainder-offset;
-						apply_default_sliding=false;
-						
-					
+/* 			if (collision_state.ledge_slip && !vel_dir_facing_up) {
+				if (cast_to<CapsuleShape3D>(shape_owner_get_shape(0, 0).ptr()) != nullptr) {
+					for (int i = 0; i < slip_indexes.size(); i++) {
+						int j = slip_indexes[i];
+						const PhysicsServer3D::MotionCollision &collision = result.collisions[j];
+					}
 				}
-			}
+				if (result.remainder.dot(slip_normal) < 0 && !result.remainder.is_equal_approx(-slip_normal) && !result.remainder.is_zero_approx()) { // moving towards but not directly
+					// Vector3 remainder_slip = result.remainder.slide(slip_normal);
+					// real_t remainder_slip_up = remainder_slip.dot(up_direction);
+					// real_t remainder_up = result.remainder.dot(up_direction);
+					// if (!Math::is_zero_approx(remainder_slip_up)) {
+					// 	// print_line("test");
+					// 	real_t slide_compensate = remainder_up/remainder_slip_up;
+					// 	motion=remainder_slip*slide_compensate;
+					// 	apply_default_sliding=false;
+					// }
+					Vector3 ray_dir = up_direction.cross(slip_normal.cross(up_direction));
+					Vector3 offset = ((result.remainder.dot(slip_normal) * ray_dir) / (ray_dir.dot(slip_normal)));
+					motion = result.remainder - offset;
+					apply_default_sliding = false;
+				}
+			} */
 
 			if (apply_default_sliding) {
 				// Regular sliding, the last part of the test handle the case when you don't want to slide on the ceiling.
@@ -554,33 +558,26 @@ void CharacterBody3D::_set_collision_direction(const PhysicsServer3D::MotionResu
 	Vector3 combined_wall_normal;
 	Vector3 tmp_wall_col; // Avoid duplicate on average calculation.
 
-	int slip_collision_count = 0;
-	Vector3 initial_slip_vec;
-	real_t slip_max_yaw=0;
-	real_t slip_min_yaw=0;
-	real_t slip_floor_angle=0;
-	bool stable_ray = custom_floor_detect ? _update_ray( test_only ? p_result.travel : Vector3() ) : true;
+	Vector<int> tmp_slip_indexes;
+	Vector3 test_position = test_only ? get_global_position() + p_result.travel : get_global_position();
+	bool slip_detection_ray = (slip_detection == SLIP_DETECTION_RAY) && (_slip_detection_ray(test_position));
 	//ERR_FAIL_COND(custom_floor_detect && cast_to<CapsuleShape3D>(shape_owner_get_shape(0,0).ptr())==nullptr);
+
 	for (int i = p_result.collision_count - 1; i >= 0; i--) {
 		const PhysicsServer3D::MotionCollision &collision = p_result.collisions[i];
 
 		if (motion_mode == MOTION_MODE_GROUNDED) {
 			// Check if any collision is floor.
 			real_t floor_angle = collision.get_angle(up_direction);
-			if (floor_angle <= floor_max_angle + FLOOR_ANGLE_THRESHOLD) {
-				if (!stable_ray)  {
-					slip_floor_angle=MAX(floor_angle,slip_floor_angle);
-
-					r_state.slipping=true;
-					if (slip_collision_count==0) {
-						initial_slip_vec= collision.normal.slide(up_direction).normalized();
-					}
-					else {
-						real_t angle = initial_slip_vec.signed_angle_to(collision.normal,up_direction);
-						slip_max_yaw = MAX(angle,slip_max_yaw);
-						slip_min_yaw = MIN(angle, slip_min_yaw);
-					}
-					slip_collision_count++;
+			if (floor_angle <= floor_max_angle + FLOOR_ANGLE_THRESHOLD) {				
+				bool slip_detection_height=false;
+				if (slip_detection==SLIP_DETECTION_HEIGHT) {
+					real_t height_difference = up_direction.dot(collision.position - test_position);
+					slip_detection_height = height_difference>=slip_height_margin || Math::is_equal_approx(height_difference,slip_height_margin);
+				}
+				if (slip_detection_ray || slip_detection_height) {
+					r_state.ledge_slip = true;
+					tmp_slip_indexes.push_back(i);
 					continue;
 				}
 				r_state.floor = true;
@@ -627,32 +624,62 @@ void CharacterBody3D::_set_collision_direction(const PhysicsServer3D::MotionResu
 			wall_collision_count++;
 		}
 	}
-	
-	if (r_state.slipping) {
 
-		if (slip_collision_count == 1) {
-			if (p_apply_state.slipping) {
-				slip_normal=up_direction.rotated(up_direction.cross(initial_slip_vec),slip_floor_angle);
-				collision_state.slipping=true;
+	if (r_state.ledge_slip) {
+		bool cancel_slip = false;
+		if (tmp_slip_indexes.size() > 1) {
+			real_t slip_max_angle = 0;
+			real_t slip_min_angle = 0;
+			Vector3 initial_slip_vec = p_result.collisions[tmp_slip_indexes[0]].normal.slide(up_direction);
+			for (int i = 1; i < tmp_slip_indexes.size(); i++) {
+				const PhysicsServer3D::MotionCollision &collision = p_result.collisions[tmp_slip_indexes[i]];
+				real_t angle = initial_slip_vec.signed_angle_to(collision.normal.slide(up_direction), up_direction);
+				slip_max_angle = MAX(slip_max_angle, angle);
+				slip_min_angle = MIN(slip_min_angle, angle);
 			}
+			cancel_slip = (slip_max_angle - slip_min_angle >= Math::PI || Math::is_equal_approx((double)(slip_max_angle - slip_min_angle), Math::PI));
+		}
+		if (!cancel_slip) {
+			collision_state.ledge_slip = true;
+			slip_indexes = tmp_slip_indexes;
 		} else {
-			if (slip_max_yaw-slip_min_yaw<Math::PI) {
-				if (p_apply_state.slipping) {
-					slip_normal =up_direction.rotated(up_direction.cross(initial_slip_vec),slip_floor_angle).rotated(up_direction,slip_max_yaw+slip_min_yaw/2);
-					collision_state.slipping=true;
-				}
-				r_state.floor=false;
-				if (p_apply_state.floor) {collision_state.floor=false;}
-			} else {
-				r_state.slipping=false;
-				if (p_apply_state.slipping) {collision_state.slipping=false;}
-				r_state.floor=true;
-				if (p_apply_state.floor) {
-					collision_state.floor=true;
-					floor_normal=up_direction.rotated(up_direction.cross(initial_slip_vec),slip_floor_angle).rotated(up_direction,slip_max_yaw+slip_min_yaw/2);
+			r_state.ledge_slip = false;
+			r_state.floor = true;
+			if (p_apply_state.floor) {
+				for (int i = 1; i < tmp_slip_indexes.size(); i++) {
+					const PhysicsServer3D::MotionCollision &collision = p_result.collisions[tmp_slip_indexes[i]];
+					if (collision.depth > floor_depth) {
+						collision_state.floor = true;
+						floor_normal = collision.normal;
+						floor_depth = collision.depth;
+						_set_platform_data(collision);
+					}
 				}
 			}
 		}
+		// if (slip_collision_count == 1) {
+		// 	if (p_apply_state.ledge_slip) {
+		// 		slip_normal=up_direction.rotated(up_direction.cross(initial_slip_vec),slip_floor_angle);
+		// 		collision_state.ledge_slip=true;
+		// 	}
+		// } else {
+		// 	if (slip_max_yaw-slip_min_yaw<Math::PI) {
+		// 		if (p_apply_state.ledge_slip) {
+		// 			slip_normal =up_direction.rotated(up_direction.cross(initial_slip_vec),slip_floor_angle).rotated(up_direction,slip_max_yaw+slip_min_yaw/2);
+		// 			collision_state.ledge_slip=true;
+		// 		}
+		// 		r_state.floor=false;
+		// 		if (p_apply_state.floor) {collision_state.floor=false;}
+		// 	} else {
+		// 		r_state.ledge_slip=false;
+		// 		if (p_apply_state.ledge_slip) {collision_state.ledge_slip=false;}
+		// 		r_state.floor=true;
+		// 		if (p_apply_state.floor) {
+		// 			collision_state.floor=true;
+		// 			floor_normal=up_direction.rotated(up_direction.cross(initial_slip_vec),slip_floor_angle).rotated(up_direction,slip_max_yaw+slip_min_yaw/2);
+		// 		}
+		// 	}
+		// }
 	}
 	if (r_state.wall) {
 		if (wall_collision_count > 1 && !r_state.floor) {
@@ -663,7 +690,7 @@ void CharacterBody3D::_set_collision_direction(const PhysicsServer3D::MotionResu
 				if (floor_angle <= floor_max_angle + FLOOR_ANGLE_THRESHOLD) {
 					r_state.floor = true;
 					r_state.wall = false;
-					r_state.slipping=false;
+					r_state.ledge_slip = false;
 					if (p_apply_state.floor) {
 						collision_state.floor = true;
 						floor_normal = combined_wall_normal;
@@ -680,7 +707,7 @@ void CharacterBody3D::_set_collision_direction(const PhysicsServer3D::MotionResu
 }
 
 void CharacterBody3D::_set_platform_data(const PhysicsServer3D::MotionCollision &p_collision) {
-		PhysicsDirectBodyState3D *bs = PhysicsServer3D::get_singleton()->body_get_direct_state(p_collision.collider);
+	PhysicsDirectBodyState3D *bs = PhysicsServer3D::get_singleton()->body_get_direct_state(p_collision.collider);
 	if (bs == nullptr) {
 		return;
 	}
@@ -723,7 +750,7 @@ bool CharacterBody3D::is_on_floor() const {
 }
 
 bool CharacterBody3D::is_on_floor_only() const {
-	return collision_state.floor && !collision_state.wall && !collision_state.ceiling && !collision_state.slipping;
+	return collision_state.floor && !collision_state.wall && !collision_state.ceiling && !collision_state.ledge_slip;
 }
 
 bool CharacterBody3D::is_on_wall() const {
@@ -731,7 +758,7 @@ bool CharacterBody3D::is_on_wall() const {
 }
 
 bool CharacterBody3D::is_on_wall_only() const {
-	return collision_state.wall && !collision_state.floor && !collision_state.ceiling && !collision_state.slipping;
+	return collision_state.wall && !collision_state.floor && !collision_state.ceiling && !collision_state.ledge_slip;
 }
 
 bool CharacterBody3D::is_on_ceiling() const {
@@ -739,7 +766,7 @@ bool CharacterBody3D::is_on_ceiling() const {
 }
 
 bool CharacterBody3D::is_on_ceiling_only() const {
-	return collision_state.ceiling && !collision_state.floor && !collision_state.wall && !collision_state.slipping;
+	return collision_state.ceiling && !collision_state.floor && !collision_state.wall && !collision_state.ledge_slip;
 }
 
 const Vector3 &CharacterBody3D::get_floor_normal() const {
@@ -928,49 +955,65 @@ void CharacterBody3D::_notification(int p_what) {
 			motion_results.clear();
 			platform_velocity = Vector3();
 			platform_angular_velocity = Vector3();
-			ledge_ray_length=((1/cos(floor_max_angle))-1)*ledge_capsule_radius+0.002;
 		} break;
 	}
 }
 
-//CUSTOM
-bool CharacterBody3D::is_custom_floor_detect_enabled() const {
-	return custom_floor_detect;
+#pragma region CUSTOM
+void CharacterBody3D::set_slip_detection(SlipDetection p_slip_detection) {
+	slip_detection = p_slip_detection;
 }
-void CharacterBody3D::set_custom_floor_detect_enabled(bool p_enabled) {
-	custom_floor_detect = p_enabled;
+
+CharacterBody3D::SlipDetection CharacterBody3D::get_slip_detection() const {
+	return slip_detection;
 }
-bool CharacterBody3D::is_slipping() const{
-	return collision_state.slipping;
+
+real_t CharacterBody3D::get_slip_ray_length() const {
+	return slip_ray_length;
 }
+
+void CharacterBody3D::set_slip_ray_length(real_t p_slip_ray_length) {
+	slip_ray_length = p_slip_ray_length;
+	// slip_ray_length = ((1 / cos(floor_max_angle)) - 1) * radius + 0.002;
+}
+real_t CharacterBody3D::get_slip_height_margin() const {
+	return slip_height_margin;
+}
+void CharacterBody3D::set_slip_height_margin(real_t p_slip_height_margin) {
+	slip_height_margin = p_slip_height_margin;
+}
+const PackedInt32Array &CharacterBody3D::get_slip_indexes() const {
+	return slip_indexes;
+}
+
+bool CharacterBody3D::is_slipping() const {
+	return collision_state.ledge_slip;
+}
+
 bool CharacterBody3D::is_slipping_only() const {
-	return collision_state.slipping && !collision_state.floor && !collision_state.wall && !collision_state.ceiling;
+	return collision_state.ledge_slip && !collision_state.floor && !collision_state.wall && !collision_state.ceiling;
 }
-bool CharacterBody3D::_update_ray(Vector3 pos) {
+
+bool CharacterBody3D::_slip_detection_ray(Vector3 pos) {
 	Ref<World3D> w3d = get_world_3d();
 	ERR_FAIL_COND_V(w3d.is_null(), false);
 	PhysicsDirectSpaceState3D *dss = PhysicsServer3D::get_singleton()->space_get_direct_state(w3d->get_space());
-	ERR_FAIL_NULL_V(dss,false);
+	ERR_FAIL_NULL_V(dss, false);
 	PhysicsDirectSpaceState3D::RayParameters ray_params;
-	ray_params.from=get_global_position()+pos+(up_direction*0.001);
-	ray_params.to=ray_params.from-(up_direction*(ledge_ray_length));
+	ray_params.from = pos + (up_direction * 0.001);
+	ray_params.to = ray_params.from - (up_direction * (slip_ray_length));
 	ray_params.exclude.insert(get_rid());
-	ray_params.collision_mask=get_collision_mask();
+	ray_params.collision_mask = get_collision_mask();
 
-	PhysicsDirectSpaceState3D::RayResult rr; 
-	return dss->intersect_ray(ray_params, rr);;
+	PhysicsDirectSpaceState3D::RayResult rr;
+	return !dss->intersect_ray(ray_params, rr);
 }
-const Vector3 &CharacterBody3D::get_slip_normal() const {
-	return slip_normal;
+
+real_t CharacterBody3D::slip_ray_length_for_capsule(real_t p_capsule_radius) const {
+	return ((1 / cos(floor_max_angle)) - 1) * p_capsule_radius + 0.002;
 }
-real_t CharacterBody3D::get_ledge_capsule_radius() const {
-	return ledge_capsule_radius;
-}
-void CharacterBody3D::set_ledge_capsule_radius(real_t radius) {
-	ledge_capsule_radius= radius;
-	ledge_ray_length=((1/cos(floor_max_angle))-1)*radius+0.002;
-}
-//CUSTOM
+
+#pragma endregion
 
 void CharacterBody3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("move_and_slide"), &CharacterBody3D::move_and_slide);
@@ -1028,15 +1071,24 @@ void CharacterBody3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_slide_collision", "slide_idx"), &CharacterBody3D::_get_slide_collision);
 	ClassDB::bind_method(D_METHOD("get_last_slide_collision"), &CharacterBody3D::_get_last_slide_collision);
 
-// CUSTOM
-	ClassDB::bind_method(D_METHOD("get_slip_normal"), &CharacterBody3D::get_slip_normal);
-	ClassDB::bind_method(D_METHOD("set_custom_floor_detect_enabled"), &CharacterBody3D::set_custom_floor_detect_enabled);
-	ClassDB::bind_method(D_METHOD("is_custom_floor_detect_enabled"), &CharacterBody3D::is_custom_floor_detect_enabled);
+#pragma region CUSTOM
+	ClassDB::bind_method(D_METHOD("set_slip_detection", "slip_detection"), &CharacterBody3D::set_slip_detection);
+	ClassDB::bind_method(D_METHOD("get_slip_detection"), &CharacterBody3D::get_slip_detection);
+
+	ClassDB::bind_method(D_METHOD("get_slip_ray_length"), &CharacterBody3D::get_slip_ray_length);
+	ClassDB::bind_method(D_METHOD("set_slip_ray_length", "slip_ray_length"), &CharacterBody3D::set_slip_ray_length);
+
+	ClassDB::bind_method(D_METHOD("get_slip_height_margin"), &CharacterBody3D::get_slip_height_margin);
+	ClassDB::bind_method(D_METHOD("set_slip_height_margin", "slip_height_margin"), &CharacterBody3D::set_slip_height_margin);
+
+	ClassDB::bind_method(D_METHOD("get_slip_indexes"), &CharacterBody3D::get_slip_indexes);
+
 	ClassDB::bind_method(D_METHOD("is_slipping"), &CharacterBody3D::is_slipping);
 	ClassDB::bind_method(D_METHOD("is_slipping_only"), &CharacterBody3D::is_slipping_only);
-	ClassDB::bind_method(D_METHOD("get_ledge_capsule_radius"), &CharacterBody3D::get_ledge_capsule_radius);
-	ClassDB::bind_method(D_METHOD("set_ledge_capsule_radius"), &CharacterBody3D::set_ledge_capsule_radius);
-// CUSTOM
+
+	ClassDB::bind_method(D_METHOD("slip_ray_length_for_capsule", "capsule_radius"), &CharacterBody3D::slip_ray_length_for_capsule);
+
+#pragma endregion
 
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "motion_mode", PROPERTY_HINT_ENUM, "Grounded,Floating", PROPERTY_USAGE_DEFAULT | PROPERTY_USAGE_UPDATE_ALL_IF_MODIFIED), "set_motion_mode", "get_motion_mode");
 	ADD_PROPERTY(PropertyInfo(Variant::VECTOR3, "up_direction"), "set_up_direction", "get_up_direction");
@@ -1052,11 +1104,13 @@ void CharacterBody3D::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "floor_max_angle", PROPERTY_HINT_RANGE, "0,180,0.1,radians_as_degrees"), "set_floor_max_angle", "get_floor_max_angle");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "floor_snap_length", PROPERTY_HINT_RANGE, "0,1,0.01,or_greater,suffix:m"), "set_floor_snap_length", "get_floor_snap_length");
 
-// CUSTOM
-	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "custom_floor_detect"), "set_custom_floor_detect_enabled", "is_custom_floor_detect_enabled");
-	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ledge_capsule_radius"), "set_ledge_capsule_radius", "get_ledge_capsule_radius");
-// CUSTOM
+#pragma region CUSTOM
+	ADD_GROUP("Ledge Slip", "slip_");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "slip_detection", PROPERTY_HINT_ENUM, "None,Ray,Height", PROPERTY_USAGE_DEFAULT | PROPERTY_USAGE_UPDATE_ALL_IF_MODIFIED), "set_slip_detection", "get_slip_detection");
 
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "slip_ray_length", PROPERTY_HINT_RANGE, "0,1,0.01,or_greater,suffix:m"), "set_slip_ray_length", "get_slip_ray_length");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "slip_height_margin", PROPERTY_HINT_RANGE, "0,1,0.01,or_greater,suffix:m"), "set_slip_height_margin", "get_slip_height_margin");
+#pragma endregion
 	ADD_GROUP("Moving Platform", "platform_");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "platform_on_leave", PROPERTY_HINT_ENUM, "Add Velocity,Add Upward Velocity,Do Nothing", PROPERTY_USAGE_DEFAULT), "set_platform_on_leave", "get_platform_on_leave");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "platform_floor_layers", PROPERTY_HINT_LAYERS_3D_PHYSICS), "set_platform_floor_layers", "get_platform_floor_layers");
@@ -1071,16 +1125,27 @@ void CharacterBody3D::_bind_methods() {
 	BIND_ENUM_CONSTANT(PLATFORM_ON_LEAVE_ADD_VELOCITY);
 	BIND_ENUM_CONSTANT(PLATFORM_ON_LEAVE_ADD_UPWARD_VELOCITY);
 	BIND_ENUM_CONSTANT(PLATFORM_ON_LEAVE_DO_NOTHING);
+#pragma region CUSTOM
+	BIND_ENUM_CONSTANT(SLIP_DETECTION_NONE);
+	BIND_ENUM_CONSTANT(SLIP_DETECTION_RAY);
+	BIND_ENUM_CONSTANT(SLIP_DETECTION_HEIGHT);
+#pragma endregion
 }
 
 void CharacterBody3D::_validate_property(PropertyInfo &p_property) const {
-		if (!Engine::get_singleton()->is_editor_hint()) {
+	if (!Engine::get_singleton()->is_editor_hint()) {
 		return;
 	}
 	if (motion_mode == MOTION_MODE_FLOATING) {
 		if (p_property.name.begins_with("floor_") || p_property.name == "up_direction" || p_property.name == "slide_on_ceiling") {
 			p_property.usage = PROPERTY_USAGE_NO_EDITOR;
 		}
+	}
+	if (slip_detection != SLIP_DETECTION_RAY && p_property.name == "slip_ray_length") {
+		p_property.usage = PROPERTY_USAGE_NO_EDITOR;
+	}
+	if (slip_detection != SLIP_DETECTION_HEIGHT && p_property.name == "slip_height_margin") {
+		p_property.usage = PROPERTY_USAGE_NO_EDITOR;
 	}
 }
 
