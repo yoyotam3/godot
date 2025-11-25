@@ -640,8 +640,12 @@ void CharacterBody3D::_set_collision_direction(const PhysicsServer3D::MotionResu
 			cancel_slip = (slip_max_angle - slip_min_angle >= Math::PI || Math::is_equal_approx((double)(slip_max_angle - slip_min_angle), Math::PI));
 		}
 		if (!cancel_slip) {
-			collision_state.ledge_slip = true;
-			slip_indexes = tmp_slip_indexes;
+			if (p_apply_state.ledge_slip) {
+				collision_state.ledge_slip = true;
+				slip_indexes = tmp_slip_indexes;
+				slip_iteration=(uint8_t)motion_results.size();
+			}
+			
 		} else {
 			r_state.ledge_slip = false;
 			r_state.floor = true;
@@ -985,7 +989,9 @@ void CharacterBody3D::set_slip_height_margin(real_t p_slip_height_margin) {
 const PackedInt32Array &CharacterBody3D::get_slip_indexes() const {
 	return slip_indexes;
 }
-
+uint8_t CharacterBody3D::get_slip_iteration() const {
+	return slip_iteration;
+}
 bool CharacterBody3D::is_slipping() const {
 	return collision_state.ledge_slip;
 }
@@ -1082,7 +1088,7 @@ void CharacterBody3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_slip_height_margin", "slip_height_margin"), &CharacterBody3D::set_slip_height_margin);
 
 	ClassDB::bind_method(D_METHOD("get_slip_indexes"), &CharacterBody3D::get_slip_indexes);
-
+	ClassDB::bind_method(D_METHOD("get_slip_iteration"), &CharacterBody3D::get_slip_iteration);
 	ClassDB::bind_method(D_METHOD("is_slipping"), &CharacterBody3D::is_slipping);
 	ClassDB::bind_method(D_METHOD("is_slipping_only"), &CharacterBody3D::is_slipping_only);
 

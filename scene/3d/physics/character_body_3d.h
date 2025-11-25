@@ -129,7 +129,7 @@ public:
 	void set_slip_height_margin(real_t p_slip_height_margin);
 
 	const PackedInt32Array &get_slip_indexes() const;
-
+	uint8_t get_slip_iteration() const;
 	bool is_slipping() const;
 	bool is_slipping_only() const;
 	real_t slip_ray_length_for_capsule(real_t p_capsule_radius) const;
@@ -205,7 +205,7 @@ private:
 	real_t slip_ray_length = 0.1;
 	real_t slip_height_margin = 0.1;
 	Vector<int> slip_indexes;
-
+	uint8_t slip_iteration;
 	bool _slip_detection_ray(Vector3 pos);
 #pragma endregion
 
